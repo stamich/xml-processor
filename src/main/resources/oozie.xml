@@ -1,0 +1,299 @@
+<workflow-app xmlns="uri:oozie:workflow:0.5" name="${appName}-report-runner">
+    <parameters>
+        <property>
+            <name>ingestionTime</name>
+            <value>00000000000000</value>
+        </property>
+    </parameters>
+
+    <global>
+        <job-tracker>${jobTracker}</job-tracker>
+        <name-node>${nameNode}</name-node>
+        <configuration>
+            <property>
+                <name>mapreduce.job.queuename</name>
+                <value>${queueName}</value>
+            </property>
+            <property>
+                <name>oozie.launcher.mapreduce.map.memory.mb</name>
+                <value>${oozieMemory}</value>
+            </property>
+            <property>
+                <name>oozie.launcher.mapreduce.job.ubertask.enable</name>
+                <value>${oozieUberModelEnabled}</value>
+            </property>
+        </configuration>
+    </global>
+
+    <credentials>
+        <credential name="hcat_auth" type="hcat">
+            <property>
+                <name>hcat.metastore.uri</name>
+                <value>${hiveMetastoreUri}</value>
+            </property>
+            <property>
+                <name>hcat.metastore.principal</name>
+                <value>${hivePrincipal}</value>
+            </property>
+        </credential>
+    </credentials>
+
+    <start to="restarted-switch"/>
+
+        <decision name="is-restarted-switch">
+            <switch>
+                <case to="archive-reports">${firstNotNull(wf:conf('overwriteEnabled'), 'false')}</case>
+                <default to="acquire-lock-switch"/>
+            </switch>
+        </decision>
+
+    <action name="archive-reports">
+        <shell xmlns="uri:oozie:shell-action:0.3">
+            <exec>${archiveReportsScriptPath}</exec>
+            <argument>--report-output-path=${reportOutputPath}/${businessDate}/${ingestionTime}</argument>
+            <argument>--designation-path=${reportsArchiveTargetPath}/${sourceSystem}/${businessDate}/${ingestionTime}</argument>
+            <file>${archiveReportsScriptPath}</file>
+        </shell>
+        <ok to="acquire-lock-switch"/>
+        <error to="fail"/>
+    </action>
+
+    <decision name="acquire-lock-switch">
+        <switch>
+            <case to="acquire-lock">${useLock}</case>
+            <default to="report-runner"/>
+        </switch>
+    </decision>
+
+    <action name="acquire-lock">
+        <shell xmlns="uri:oozie:shell-action:0.3">
+            <exec>retry</exec>
+            <argument>--script=hadoop</argument>
+            <argument>--retry-max=${acquireLockRetryMax}</argument>
+            <argument>--retry-interval=${acquireLockRetryInterval}</argument>
+            <argument>--</argument>
+            <argument>fs</argument>
+            <argument>mv</argument>
+            <argument>${firstNotNull(wf:conf('oozieFsPrefix'), '')}${dataPath}/permit</argument>
+            <argument>${firstNotNull(wf:conf('oozieFsPrefix'), '')}${dataPath}/lock</argument>
+            <file>${retryScriptPath}#retry</file>
+            <capture-output/>
+        </shell>
+        <ok to="report-runner"/>
+        <error to="handle-failure"/>
+    </action>
+
+    <action name ="report-runner" cred="hcat_auth">
+        <shell xmlns = "uri:oozie:shell-action:0.3">
+            <exec>spark-submit</exec>
+            <argument>--verbose</argument>
+            <argument>--master</argument>
+            <argument>${sparkMaster}</argument>
+            <argument>--deploy-mode</argument>
+            <argument>client</argument>
+            <argument>--num-executors</argument>
+            <argument>${sparkReportRunnerExecutors}</argument>
+            <argument>--class</argument>
+            <argument>com.abc.cars.reportrunner.CarsReportRunnerApplication</argument>
+            <argument>--files</argument>
+            <argument>CARS.trusttore.jks.CARS.keystore.jks</argument>
+            <argument>--driver-class-path=${extraClassPath}</argument>
+            <argument>--conf</argument>
+            <argument>spark.executor.extraClassPath=${extraClassPath}</argument>
+            <argument>--conf</argument>
+            <argument>spark.sql.shuffle.partitions=${sparkPartitions}</argument>
+            <argument>--conf</argument>
+            <argument>spark.driver.extraJavaOptions=Dlog4j.configuration=file:log4j.properties -Dapp.name=report-${sourceSystem}</argument>
+            <argument>--conf</argument>
+            <argument>spark.executor.extraJavaOptions=-Dlog4j.configuration=file:log4j.properties -Dapp.name=report-${sourceSystem}</argument>
+            <argument>--queue</argument>
+            <argument>${sparkQueue}</argument>
+            <argument>--executor-memory</argument>
+            <argument>${sparkReportRunnerExecutorMemory}</argument>
+            <argument>--driver-memory</argument>
+            <argument>${sparkDriverMemory}</argument>
+            <argument>${reportRunnerJar}</argument>
+            <argument>--reportNamePrefixEnvironment</argument>
+            <argument>${reportNamePrefixEnvironment}</argument>
+            <argument>--reportOutputRootHdfsFolder</argument>
+            <argument>${reportOutputPath}/${businessDate}/${ingestionTime}/${wf:id()}.har</argument>
+            <argument>--sourceSystem</argument>
+            <argument>${sourceSystem}</argument>
+            <argument>--businessDate</argument>
+            <argument>${businessDate}</argument>
+            <argument>--ingestionTime</argument>
+            <argument>${ingestionTime}</argument>
+            <argument>--reportTypes</argument>
+            <argument>${reportTypes}</argument>
+            <argument>--accountIds</argument>
+            <argument>${firstNotNull(wf:conf('accountIds'), '')}</argument>
+            <argument>--enableValidation</argument>
+            <argument>${reportEnableValidation}</argument>
+            <argument>--multipleDelivery</argument>
+            <argument>${reportMultipleDelivery}</argument>
+            <argument>--accountBlackList</argument>
+            <argument>${blackListBasePath}/source_system=${source_system}/blackList.json</argument>
+            <argument>--accountBlackListSnapshot</argument>
+            <argument>${accountBlackListSnapshotBasePath}/source_system=${source_system}/business_date=${business_date}/ingestion_time=${ingestion_time}</argument>
+            <argument>--capPath</argument>
+            <argument>${firstNotNull(wf:conf('capPath'), '')}</argument>
+            <argument>--capBtcPath</argument>
+            <argument>${firstNotNull(wf:conf('capBtcPath'), '')}</argument>
+            <argument>--useKafka=${firstNotNull(wf:conf('useKafka'), 'false')}</argument>
+            <argument>--checkpointPath=${reportOutputPath}</argument>
+            <env-var>SPARK_CONF_PATH=${sparkConfPath}</env-var>
+            <file>${hiveSitePath}</file>
+            <file>${applicationConfPath}</file>
+            <file>${log4jPropertiesPath}</file>
+            <file>${kafkaTruststorePath}</file>
+            <file>${kafkaKeystorePath}</file>
+            <file>${reportRunnerJarPath}</file>
+            <capture-output/>
+        </shell>
+    </action>
+
+    <decision name="release-lock-switch">
+        <switch>
+            <case to="release-lock">${useLock}</case>
+            <default to="validations-to-kafka-report-runner"/>
+        </switch>
+    </decision>
+
+    <action name="release-lock">
+        <fs>
+            <move source="${firstNotNull(wf:conf('oozieFsPrefix'), '')}${dataPath}/lock" target="${firstNotNull(wf:conf('oozieFsPrefix'), '')}${dataPath}/permit"/>
+        </fs>
+        <ok to="validations-to-kafka-report-runner"/>
+        <error to="handle-failure"/>
+    </action>
+
+    <action name="validations-to-kafka-report-runner">
+        <sub-workflow>
+            <app-path>${validations2kafkaAppPath}</app-path>
+            <propagate-configuration/>
+            <configuration>
+                <property>
+                    <name>businessDate</name>
+                    <value>${businessDate}</value>
+                </property>
+                <property>
+                    <name>sourceSystem</name>
+                    <value>${sourceSystem}</value>
+                </property>
+                <property>
+                    <name>origin</name>
+                    <value>R</value>
+                </property>
+            </configuration>
+        </sub-workflow>
+        <ok to="mirroring-switch"/>
+        <error to="validations-to-kafka-error-handler"/>
+    </action>
+
+    <action name="validations-to-kafka-error-handler">
+        <sub-workflow>
+            <app-path>${failureHandlerAppPath}</app-path>
+            <propagate-configuration/>
+            <configuration>
+                <property>
+                    <name>parentWorkFlowErrorMessage</name>
+                    <value>${wf:errorMessage(wf:lastErrorNode())}</value>
+                </property>
+                <property>
+                    <name>parentErrorNode</name>
+                    <value>${wf:lastErrorNode()}</value>
+                </property>
+            </configuration>
+        </sub-workflow>
+        <ok to="mirroring-switch"/>
+        <error to="fail"/>
+    </action>
+
+    <decision name="mirroring-switch">
+        <switch>
+            <case to="run-mirroring">${mirroringEnabled}</case>
+            <default to="ebridge-switch"/>
+        </switch>
+    </decision>
+
+    <action name="run-mirroring">
+        <sub-workflow>
+            <app-path>${mirroringAppPath}</app-path>
+            <propagate-configuration/>
+        </sub-workflow>
+        <ok to="ebridge-switch"/>
+        <error to="mirroring-error-handler"/>
+    </action>
+
+    <action name="mirroring-error-handler">
+        <sub-workflow>
+            <app-path>${failureHandlerAppPath}</app-path>
+            <propagate-configuration/>
+            <configuration>
+                <property>
+                    <name>parentWorkFlowErrorMessage</name>
+                    <value>${wf:errorMessage(wf:lastErrorNode())}</value>
+                </property>
+                <property>
+                    <name>parentErrorNode</name>
+                    <value>${wf:lastErrorNode()}</value>
+                </property>
+            </configuration>
+        </sub-workflow>
+        <ok to="ebridge-switch"/>
+        <error to="fail"/>
+    </action>
+
+    <decision name="ebridge-switch">
+        <switch>
+            <case to="ebridge-connector-kafka">${ebridgeEnabled}</case>
+            <default to="end"/>
+        </switch>
+    </decision>
+
+    <action name="ebridge-connector">
+        <shell xmlns="uri:oozie:shell-action:0.3">
+            <exec>retry</exec>
+            <argument>--script=${eBridgeConnectorScript}</argument>
+            <argument>--retry-max=${eBridgeRetryMax}</argument>
+            <argument>--retry-interval=${eBridgeRetryInterval}</argument>
+            <argument>--</argument>
+            <argument>har://${reportOutputPath}/${businessDate}/${ingestionTime}/${wf:id()}.har</argument>
+            <env-var>HADOOP_MAX_MEMORY=${hadoopClientMemory}</env-var>
+            <env-var>SSH_CONFIG_FILE=./ssh_config</env-var>
+            <env-var>IDENTITY_FILE=./ebridge_rsa</env-var>
+            <file>${}retryScriptPath}#retry</file>
+            <file>${eBridgeConnectorScriptPath}</file>
+            <file>${sshConfigFile}#ssh_config</file>
+            <file>${eBridgeKeyPath}#ebridge_rsa</file>
+        </shell>
+        <ok to="End"/>
+        <error to="handle-failure"/>
+    </action>
+
+    <action name="handle-failure">
+        <sub-workflow>
+            <app-path>${failureHandlerAppPath}</app-path>
+            <propagate-configuration/>
+            <configuration>
+                <property>
+                    <name>parentWorkFlowErrorMessage</name>
+                    <value>${wf:errorMessage(wf:lastErrorNode())}</value>
+                </property>
+                <property>
+                    <name>parentErrorNode</name>
+                    <value>${wf:lastErrorNode()}</value>
+                </property>
+            </configuration>
+        </sub-workflow>
+        <ok to="fail"/>
+        <error to="fail"/>
+    </action>
+
+    <kill name="fail">
+        <message>Workflow failed, error message[${wf:errorMessage(wf:lastErrorNode())}]</message>
+    </kill>
+
+    <end name="end"/>
+
+</workflow-app>
