@@ -17,5 +17,21 @@ libraryDependencies += "org.typelevel" %% "cats-effect" % "3.5.7"
 // https://mvnrepository.com/artifact/org.apache.kafka/kafka-clients
 libraryDependencies += "org.apache.kafka" % "kafka-clients" % "3.9.0"
 
+// https://mvnrepository.com/artifact/commons-codec/commons-codec
+libraryDependencies += "commons-codec" % "commons-codec" % "1.18.0"
+
+libraryDependencies += "org.json" % "json" % "20250107"
+
+libraryDependencies += "org.apache.hadoop" % "hadoop-common" % "3.4.1"
+libraryDependencies += "org.apache.hadoop" % "hadoop-client" % "3.4.1"
+
+// HTTP client for Splunk API
+libraryDependencies += "org.http4s" %% "http4s-dsl" % "0.23.30"
+libraryDependencies += "org.http4s" %% "http4s-blaze-client" % "0.23.17"
+libraryDependencies += "org.http4s" %% "http4s-circe" % "0.23.30"
+
+// https://mvnrepository.com/artifact/io.grpc/grpc-stub
+libraryDependencies += "io.grpc" % "grpc-stub" % "1.71.0"
+
 // https://mvnrepository.com/artifact/org.scalatest/scalatest
 libraryDependencies += "org.scalatest" %% "scalatest" % "3.2.19" % Test

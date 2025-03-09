@@ -13,9 +13,12 @@ class KafkaManager {
   private val topic = "test"
   private val maxFileSize = 1 * 1024 * 1024
 
-  def produceRecords(props: Properties): IO[Unit] = IO {
+  def produceRecords(props: Properties): IO[Unit] = {
 
-    val producer = new ProducerManager().createProducer(props)
+    val producerManager = new ProducerManager()
+    val standardProducer = producerManager.createReportProducer(props)
+    val bigReportProducer = producerManager.createBigReportProducer(props)
+
     val fileHandler = new FileHandler()
     val directory = props.getProperty("directory")
 
@@ -28,21 +31,26 @@ class KafkaManager {
             for {
               data <- fileHandler.readFileContentAsString(file)
               record = createRecord(file, data)
-              //inputStream = new ByteArrayInputStream(record.value().getBytes)
-              _ <- IO(producer.send(createRecord(file, data)))
+              inputStream = new ByteArrayInputStream(record.value().getBytes)
+              _ <- IO(bigReportProducer.send(inputStream, producerManager.makeHeaders(record.key())))
             } yield ()
           } else {
             for {
               content <- fileHandler.readFileContentAsString(file)
-              _ <- IO(producer.send(createRecord(file, content)))
+              record = createRecord(file, content)
+              _ <- IO(standardProducer.send(record.value().mkString, producerManager.makeHeaders(record.key())))
             } yield ()
           }
         } yield ()
       }
-    } yield ()).guarantee(IO { producer.close()})
+    } yield ()).guarantee(IO { bigReportProducer.close(); standardProducer.close() })
   }
 
   private def createRecord(file: File, content: String): ProducerRecord[String, String] = {
     new ProducerRecord[String, String](topic, file.getName, content)
+  }
+
+  private def createProducerRecord(file: File, content: Array[Byte]): ProducerRecord[String, Array[Byte]] = {
+    new ProducerRecord[String, Array[Byte]](topic, file.getName, content)
   }
 }

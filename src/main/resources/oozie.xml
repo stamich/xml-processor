@@ -246,6 +246,7 @@
 
     <decision name="ebridge-switch">
         <switch>
+            <case to ="ebridge-connector-scp">${!ebridgeEnabled}</case>
             <case to="ebridge-connector-kafka">${ebridgeEnabled}</case>
             <default to="end"/>
         </switch>
