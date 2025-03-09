@@ -35,3 +35,6 @@ libraryDependencies += "io.grpc" % "grpc-stub" % "1.71.0"
 
 // https://mvnrepository.com/artifact/org.scalatest/scalatest
 libraryDependencies += "org.scalatest" %% "scalatest" % "3.2.19" % Test
+libraryDependencies += "org.mockito" %% "mockito-scala" % "1.17.37" % Test
+libraryDependencies += "org.typelevel" %% "cats-effect-testing-scalatest" % "1.6.0" % Test
+

@@ -25,9 +25,13 @@ class FileHandler {
     new String(Files.readAllBytes(Paths.get(file.getAbsolutePath)))
   }
 
-  def listXmlFilesFromHar(harPath: String): IO[List[File]] = IO {
+  def getFileSystem(harPath: String): FileSystem = {
     val conf = new Configuration()
-    val fs = FileSystem.get(URI.create(harPath), conf)
+    FileSystem.get(URI.create(harPath), conf)
+  }
+
+  def listXmlFilesFromHar(harPath: String): IO[List[File]] = IO {
+    val fs = getFileSystem(harPath)
     val harFilePath = new Path(harPath)
 
     val fileStatuses = fs.listStatus(harFilePath)
@@ -37,8 +41,7 @@ class FileHandler {
   }
 
   def readFileContentFromHar(harPath: String, file: File): IO[String] = IO {
-    val conf = new Configuration()
-    val fs = FileSystem.get(URI.create(harPath), conf)
+    val fs = getFileSystem(harPath)
     val filePath = new Path(s"$harPath/${file.getName}")
 
     val inputStream = fs.open(filePath)

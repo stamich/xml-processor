@@ -75,4 +75,8 @@ class ConcurrentKafkaManager {
       standardProducer.close()
     })
   }
+
+  // Testing purpose methods
+  private[broker] def createProducerManager(): ProducerManager = new ProducerManager()
+  private[broker] def createFileHandler(): FileHandler = new FileHandler()
 }

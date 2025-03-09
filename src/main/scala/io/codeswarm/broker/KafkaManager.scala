@@ -53,4 +53,8 @@ class KafkaManager {
   private def createProducerRecord(file: File, content: Array[Byte]): ProducerRecord[String, Array[Byte]] = {
     new ProducerRecord[String, Array[Byte]](topic, file.getName, content)
   }
+
+  // Testing purpose methods
+  private[broker] def createProducerManager(): ProducerManager = new ProducerManager()
+  private[broker] def createFileHandler(): FileHandler = new FileHandler()
 }

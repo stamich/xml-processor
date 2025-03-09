@@ -1,6 +1,7 @@
 package io.codeswarm.metric
 
 import cats.effect.{IO, Resource}
+import com.sun.jmx.remote.protocol.rmi.ClientProvider
 import io.circe.syntax._
 import org.apache.hadoop.fs.{FileSystem, Path}
 import org.apache.hadoop.conf.Configuration
@@ -18,19 +19,21 @@ import scala.concurrent.ExecutionContext.global
 object SplunkLogger {
 
   private val dateTimePattern = DateTimeFormatter.ofPattern("yyyy-MM-dd'T'HH:mm:ss.SSS")
+  private var fileSystemProvider: Configuration => FileSystem = (conf: Configuration) => FileSystem.get(conf)
 
   def logToSplunk(
-    workflowId: String,
-    businessDate: String,
-    ingestionTime: String,
-    sourceSystem: String,
-    connectorType: String,
-    executionOutput: String,
-    harPath: String,
-    splunkUrl: String,
-    splunkToken: String,
-    splunkIndex: String
-    ): IO[Unit] = {
+                   workflowId: String,
+                   businessDate: String,
+                   ingestionTime: String,
+                   sourceSystem: String,
+                   connectorType: String,
+                   executionOutput: String,
+                   harPath: String,
+                   splunkUrl: String,
+                   splunkToken: String,
+                   splunkIndex: String,
+                   clientProvider: ClientProvider
+                 ): IO[Unit] = {
     val client = BlazeClientBuilder[IO](global).resource
 
     for {
@@ -56,9 +59,9 @@ object SplunkLogger {
     } yield ()
   }
 
-  private def countXmlFiles(harPath: String): IO[Int] = IO {
+  def countXmlFiles(harPath: String): IO[Int] = IO {
     val conf = new Configuration()
-    val fs = FileSystem.get(conf)
+    val fs = fileSystemProvider(conf)
     val path = new Path(harPath)
 
     if (fs.exists(path)) {
@@ -67,7 +70,7 @@ object SplunkLogger {
     } else 0
   }
 
-  private def extractTimestamps(output: String, connectorType: String): (String, String) = {
+  def extractTimestamps(output: String, connectorType: String): (String, String) = {
     val startPattern = if (connectorType == "kafka")
       "\\[(.*?)\\].*Processing files from".r
     else
@@ -85,7 +88,7 @@ object SplunkLogger {
     (startMatch.getOrElse(now), endMatch.getOrElse(now))
   }
 
-  private def calculateDuration(start: String, end: String): Long = {
+  def calculateDuration(start: String, end: String): Long = {
     try {
       val startDt = LocalDateTime.parse(start, dateTimePattern)
       val endDt = LocalDateTime.parse(end, dateTimePattern)
@@ -95,7 +98,7 @@ object SplunkLogger {
     }
   }
 
-  private def sendToSplunk(
+  def sendToSplunk(
                             clientR: Resource[IO, Client[IO]],
                             event: SplunkEvent,
                             splunkUrl: String,

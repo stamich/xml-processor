@@ -105,4 +105,8 @@ class ConcurrentKafkaManagerWithRemoval {
       standardProducer.close()
     })
   }
+
+  private[broker] def createProducerManager(): ProducerManager = new ProducerManager()
+  private[broker] def createFileHandler(): FileHandler = new FileHandler()
+  private[broker] def createXmlParser(): XmlParser = new XmlParser()
 }
