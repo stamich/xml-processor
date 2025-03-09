@@ -1,63 +1,21 @@
 package io.codeswarm.metric
 
-import cats.effect.{IO, Resource}
-import com.sun.jmx.remote.protocol.rmi.ClientProvider
-import io.circe.syntax._
-import org.apache.hadoop.fs.{FileSystem, Path}
+import cats.effect.IO
 import org.apache.hadoop.conf.Configuration
-import org.http4s.Method._
-import org.http4s._
-import org.http4s.circe._
+import org.apache.hadoop.fs.{FileSystem, Path}
 import org.http4s.client.Client
-import org.http4s.client.blaze.BlazeClientBuilder
-import org.http4s.headers._
+import org.http4s.{Method, Request, Uri}
+import org.http4s.headers.Authorization
+import org.http4s.AuthScheme
 
 import java.time.LocalDateTime
 import java.time.format.DateTimeFormatter
-import scala.concurrent.ExecutionContext.global
+import java.time.temporal.ChronoUnit
+import java.nio.charset.StandardCharsets
 
 object SplunkLogger {
-
-  private val dateTimePattern = DateTimeFormatter.ofPattern("yyyy-MM-dd'T'HH:mm:ss.SSS")
+  // For testing
   private var fileSystemProvider: Configuration => FileSystem = (conf: Configuration) => FileSystem.get(conf)
-
-  def logToSplunk(
-                   workflowId: String,
-                   businessDate: String,
-                   ingestionTime: String,
-                   sourceSystem: String,
-                   connectorType: String,
-                   executionOutput: String,
-                   harPath: String,
-                   splunkUrl: String,
-                   splunkToken: String,
-                   splunkIndex: String,
-                   clientProvider: ClientProvider
-                 ): IO[Unit] = {
-    val client = BlazeClientBuilder[IO](global).resource
-
-    for {
-      reportsCount <- countXmlFiles(harPath)
-      (startTime, endTime) = extractTimestamps(executionOutput, connectorType)
-      duration = calculateDuration(startTime, endTime)
-      now = LocalDateTime.now().format(dateTimePattern)
-
-      event = SplunkEvent(
-        workflow_id = workflowId,
-        business_date = businessDate,
-        ingestion_time = ingestionTime,
-        source_system = sourceSystem,
-        connector_type = connectorType,
-        reports_count = reportsCount,
-        start_time = startTime,
-        end_time = endTime,
-        duration_seconds = duration,
-        timestamp = now
-      )
-
-      _ <- sendToSplunk(client, event, splunkUrl, splunkToken, splunkIndex)
-    } yield ()
-  }
 
   def countXmlFiles(harPath: String): IO[Int] = IO {
     val conf = new Configuration()
@@ -71,91 +29,98 @@ object SplunkLogger {
   }
 
   def extractTimestamps(output: String, connectorType: String): (String, String) = {
-    val startPattern = if (connectorType == "kafka")
-      "\\[(.*?)\\].*Processing files from".r
-    else
-      "\\[(.*?)\\].*Start sending .* reports".r
+    val pattern = "\\[(.*?)\\]".r
 
-    val endPattern = if (connectorType == "kafka")
-      "\\[(.*?)\\].*All files processed successfully".r
-    else
-      "\\[(.*?)\\].*All reports successfully sent".r
+    val timestamps = pattern.findAllMatchIn(output)
+      .map(_.group(1))
+      .toList
 
-    val startMatch = startPattern.findFirstMatchIn(output).map(_.group(1))
-    val endMatch = endPattern.findFirstMatchIn(output).map(_.group(1))
+    val first = timestamps.headOption.getOrElse("")
+    val last = timestamps.lastOption.getOrElse("")
 
-    val now = LocalDateTime.now().format(dateTimePattern)
-    (startMatch.getOrElse(now), endMatch.getOrElse(now))
+    (first, last)
   }
 
   def calculateDuration(start: String, end: String): Long = {
-    try {
-      val startDt = LocalDateTime.parse(start, dateTimePattern)
-      val endDt = LocalDateTime.parse(end, dateTimePattern)
-      java.time.Duration.between(startDt, endDt).getSeconds
-    } catch {
-      case _: Exception => 0L
-    }
+    val formatter = DateTimeFormatter.ofPattern("yyyy-MM-dd'T'HH:mm:ss.SSS")
+    val startTime = LocalDateTime.parse(start, formatter)
+    val endTime = LocalDateTime.parse(end, formatter)
+    ChronoUnit.SECONDS.between(startTime, endTime)
   }
 
   def sendToSplunk(
-                            clientR: Resource[IO, Client[IO]],
-                            event: SplunkEvent,
-                            splunkUrl: String,
-                            token: String,
-                            index: String
-                          ): IO[Unit] = {
-    val payload = Map(
-      "event" -> event.asJson,
-      "sourcetype" -> "ebridge_connector_logs".asJson,
-      "index" -> index.asJson,
-      "source" -> "oozie_workflow".asJson
-    ).asJson
+                    client: Client[IO],
+                    event: SplunkEvent,
+                    splunkUrl: String,
+                    splunkToken: String,
+                    splunkIndex: String
+                  ): IO[String] = {
+    // Convert event to JSON string manually without circe
+    val jsonEvent = s"""
+                       |{
+                       |  "event": {
+                       |    "workflow_id": "${event.workflow_id}",
+                       |    "business_date": "${event.business_date}",
+                       |    "ingestion_time": "${event.ingestion_time}",
+                       |    "source_system": "${event.source_system}",
+                       |    "connector_type": "${event.connector_type}",
+                       |    "reports_count": ${event.reports_count},
+                       |    "start_time": "${event.start_time}",
+                       |    "end_time": "${event.end_time}",
+                       |    "duration_seconds": ${event.duration_seconds},
+                       |    "timestamp": "${event.timestamp}"
+                       |  },
+                       |  "sourcetype": "emb_metrics",
+                       |  "index": "$splunkIndex"
+                       |}""".stripMargin
 
-    val request = Request[IO](POST, Uri.unsafeFromString(splunkUrl))
-      .withHeaders(
-        Authorization(Credentials.Token(AuthScheme.Bearer, token)),
-        `Content-Type`(MediaType.application.json)
-      )
-      .withEntity(payload)
+    val request = Request[IO](Method.POST, Uri.unsafeFromString(splunkUrl))
+      .withHeaders(Authorization(org.http4s.Credentials.Token(AuthScheme.Bearer, splunkToken)))
+      .withEntity(jsonEvent)
 
-    clientR.use { client =>
-      client.status(request).flatMap {
-        case Status.Ok => IO.unit
-        case status => IO.raiseError(new Exception(s"Failed to send to Splunk: $status"))
-      }
-    }
+    client.expect[String](request)
   }
 
-  def main(args: Array[String]): Unit = {
-    val usage = """
-                  |Usage: SplunkLogger --workflow-id=<id> --business-date=<date> --ingestion-time=<time>
-                  |                     --source-system=<sys> --connector-type=<type> --execution-output=<output>
-                  |                     --har-path=<path> --splunk-url=<url> --splunk-token=<token> --splunk-index=<index>
-      """.stripMargin
+  // Define the ClientProvider trait
+  trait ClientProvider {
+    def getClient(): IO[Client[IO]]
+  }
 
-    if (args.length < 10) {
-      println(usage)
-      sys.exit(1)
-    }
+  // Main method for sending metrics to Splunk
+  def logToSplunk(
+                   workflowId: String,
+                   businessDate: String,
+                   ingestionTime: String,
+                   sourceSystem: String,
+                   connectorType: String,
+                   executionOutput: String,
+                   harPath: String,
+                   splunkUrl: String,
+                   splunkToken: String,
+                   splunkIndex: String,
+                   clientProvider: ClientProvider
+                 ): IO[Unit] = {
+    for {
+      count <- countXmlFiles(harPath)
+      (startTime, endTime) = extractTimestamps(executionOutput, connectorType)
+      durationSeconds = calculateDuration(startTime, endTime)
+      timestamp = LocalDateTime.now().format(DateTimeFormatter.ofPattern("yyyy-MM-dd'T'HH:mm:ss.SSS"))
 
-    val argMap = args.map { arg =>
-      val parts = arg.split("=", 2)
-      if (parts.length == 2) parts(0).drop(2) -> parts(1)
-      else parts(0).drop(2) -> ""
-    }.toMap
+      event = SplunkEvent(
+        workflow_id = workflowId,
+        business_date = businessDate,
+        ingestion_time = ingestionTime,
+        source_system = sourceSystem,
+        connector_type = connectorType,
+        reports_count = count,
+        start_time = startTime,
+        end_time = endTime,
+        duration_seconds = durationSeconds,
+        timestamp = timestamp
+      )
 
-    logToSplunk(
-      workflowId = argMap.getOrElse("workflow-id", "unknown"),
-      businessDate = argMap.getOrElse("business-date", "unknown"),
-      ingestionTime = argMap.getOrElse("ingestion-time", "unknown"),
-      sourceSystem = argMap.getOrElse("source-system", "unknown"),
-      connectorType = argMap.getOrElse("connector-type", "unknown"),
-      executionOutput = argMap.getOrElse("execution-output", ""),
-      harPath = argMap.getOrElse("har-path", ""),
-      splunkUrl = argMap.getOrElse("splunk-url", ""),
-      splunkToken = argMap.getOrElse("splunk-token", ""),
-      splunkIndex = argMap.getOrElse("splunk-index", "main")
-    ).unsafeRunSync()
+      client <- clientProvider.getClient()
+      _ <- sendToSplunk(client, event, splunkUrl, splunkToken, splunkIndex)
+    } yield ()
   }
 }

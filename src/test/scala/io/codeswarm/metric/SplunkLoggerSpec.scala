@@ -2,21 +2,20 @@ package io.codeswarm.metric
 
 import cats.effect.IO
 import cats.effect.unsafe.implicits.global
-import cats.effect.testing.scalatest.AsyncIOSpec
-import io.circe.Json
 import org.apache.hadoop.conf.Configuration
 import org.apache.hadoop.fs.{FileStatus, FileSystem, Path}
 import org.http4s.client.Client
-import org.http4s.{Request, Response, Status, Uri}
+import org.http4s.{Request, Response, Status}
 import org.mockito.{ArgumentCaptor, ArgumentMatchersSugar, MockitoSugar}
 import org.scalatest.BeforeAndAfterEach
-import org.scalatest.flatspec.AsyncFlatSpec
+import org.scalatest.funsuite.AnyFunSuite
 import org.scalatest.matchers.should.Matchers
 
 import java.time.LocalDateTime
 import java.time.format.DateTimeFormatter
+import java.nio.charset.StandardCharsets
 
-class SplunkLoggerSpec extends AsyncFlatSpec with AsyncIOSpec with MockitoSugar
+class SplunkLoggerSpec extends AnyFunSuite with MockitoSugar
   with ArgumentMatchersSugar with Matchers with BeforeAndAfterEach {
 
   // Mock FileSystem
@@ -24,12 +23,9 @@ class SplunkLoggerSpec extends AsyncFlatSpec with AsyncIOSpec with MockitoSugar
 
   // Helper function to create a test FileSystem
   def createTestFileSystem(): Unit = {
-    val mockConf = mock[Configuration]
-
-    // Mock the static FileSystem.get method
     val fsField = classOf[SplunkLogger.type].getDeclaredField("fileSystemProvider")
     fsField.setAccessible(true)
-    fsField.set(SplunkLogger, (conf: Configuration) => mockFs)
+    fsField.set(SplunkLogger, (_: Configuration) => mockFs)
   }
 
   override def beforeEach(): Unit = {
@@ -37,7 +33,7 @@ class SplunkLoggerSpec extends AsyncFlatSpec with AsyncIOSpec with MockitoSugar
     createTestFileSystem()
   }
 
-  "countXmlFiles" should "return the correct count of XML files" in {
+  test("countXmlFiles should return the correct count of XML files") {
     // Setup
     val harPath = "/test/path.har"
     val fileStatuses = Array(
@@ -57,7 +53,7 @@ class SplunkLoggerSpec extends AsyncFlatSpec with AsyncIOSpec with MockitoSugar
     verify(mockFs).listStatus(eqTo(new Path(harPath)))
   }
 
-  "extractTimestamps" should "extract correct timestamps for kafka connector" in {
+  test("extractTimestamps should extract correct timestamps for kafka connector") {
     val output = """
       [2023-04-01T12:00:00.000] Processing files from /test/path.har
       ... some log output ...
@@ -70,7 +66,7 @@ class SplunkLoggerSpec extends AsyncFlatSpec with AsyncIOSpec with MockitoSugar
     end shouldBe "2023-04-01T12:05:30.000"
   }
 
-  it should "extract correct timestamps for non-kafka connector" in {
+  test("extractTimestamps should extract correct timestamps for non-kafka connector") {
     val output = """
       [2023-04-01T12:00:00.000] Start sending test reports
       ... some log output ...
@@ -83,7 +79,7 @@ class SplunkLoggerSpec extends AsyncFlatSpec with AsyncIOSpec with MockitoSugar
     end shouldBe "2023-04-01T12:05:30.000"
   }
 
-  "calculateDuration" should "return correct duration in seconds" in {
+  test("calculateDuration should return correct duration in seconds") {
     val start = "2023-04-01T12:00:00.000"
     val end = "2023-04-01T12:05:30.000"
 
@@ -92,10 +88,10 @@ class SplunkLoggerSpec extends AsyncFlatSpec with AsyncIOSpec with MockitoSugar
     duration shouldBe 330 // 5 minutes and 30 seconds
   }
 
-  "sendToSplunk" should "send the correct payload to Splunk" in {
+  test("sendToSplunk should send the correct payload to Splunk") {
     // Setup mock client
     val mockClient = mock[Client[IO]]
-    when(mockClient.status(any[Request[IO]])).thenReturn(IO.pure(Status.Ok))
+    when(mockClient.expect[String](any[Request[IO]])).thenReturn(IO.pure("Success"))
 
     val event = SplunkEvent(
       workflow_id = "test-workflow",
@@ -121,7 +117,7 @@ class SplunkLoggerSpec extends AsyncFlatSpec with AsyncIOSpec with MockitoSugar
 
     // Verify
     val requestCaptor = ArgumentCaptor.forClass(classOf[Request[IO]])
-    verify(mockClient).status(requestCaptor.capture())
+    verify(mockClient).expect[String](requestCaptor.capture())
 
     val request = requestCaptor.getValue
     request.method.name shouldBe "POST"
@@ -131,7 +127,7 @@ class SplunkLoggerSpec extends AsyncFlatSpec with AsyncIOSpec with MockitoSugar
     authHeader shouldBe "Bearer test-token"
   }
 
-  "logToSplunk" should "process data and send to Splunk" in {
+  test("logToSplunk should process data and send to Splunk") {
     // Setup
     val fileStatuses = Array(
       createFileStatus("file1.xml"),
@@ -142,38 +138,33 @@ class SplunkLoggerSpec extends AsyncFlatSpec with AsyncIOSpec with MockitoSugar
     when(mockFs.listStatus(any[Path])).thenReturn(fileStatuses)
 
     // Mock the HTTP client
-    val mockClientProvider = mock[ClientProvider]
-    when(mockClientProvider.getClient()).thenReturn(IO.pure(mock[Client[IO]]))
-    when(mockClientProvider.getClient().flatMap(any[Client[IO] => IO[Unit]]())(any())).thenReturn(IO.unit)
+    val mockHttpClient = mock[Client[IO]]
+    when(mockHttpClient.expect[String](any[Request[IO]])).thenReturn(IO.pure("Success"))
 
-    val splunkLoggerWithMocks = new {
-      def testLogToSplunk(): IO[Unit] = {
-        SplunkLogger.logToSplunk(
-          workflowId = "test-workflow",
-          businessDate = "2023-04-01",
-          ingestionTime = "2023-04-01T12:00:00.000",
-          sourceSystem = "test-system",
-          connectorType = "kafka",
-          executionOutput = """
-            [2023-04-01T12:00:00.000] Processing files from /test/path.har
-            [2023-04-01T12:05:30.000] All files processed successfully
-          """,
-          harPath = "/test/path.har",
-          splunkUrl = "https://splunk-api.example.com/services/collector",
-          splunkToken = "test-token",
-          splunkIndex = "test-index",
-          clientProvider = mockClientProvider
-        )
-      }
-    }
+    val clientProvider = new TestClientProvider(mockHttpClient)
 
     // Execute
-    val result = splunkLoggerWithMocks.testLogToSplunk().attempt.unsafeRunSync()
+    val result = SplunkLogger.logToSplunk(
+      workflowId = "test-workflow",
+      businessDate = "2023-04-01",
+      ingestionTime = "2023-04-01T12:00:00.000",
+      sourceSystem = "test-system",
+      connectorType = "kafka",
+      executionOutput = """
+        [2023-04-01T12:00:00.000] Processing files from /test/path.har
+        [2023-04-01T12:05:30.000] All files processed successfully
+      """,
+      harPath = "/test/path.har",
+      splunkUrl = "https://splunk-api.example.com/services/collector",
+      splunkToken = "test-token",
+      splunkIndex = "test-index",
+      clientProvider = clientProvider
+    ).attempt.unsafeRunSync()
 
     // Verify
     result should be(Symbol("right"))
     verify(mockFs).listStatus(any[Path])
-    verify(mockClientProvider).getClient()
+    verify(mockHttpClient).expect[String](any[Request[IO]])
   }
 
   // Helper methods
@@ -185,8 +176,8 @@ class SplunkLoggerSpec extends AsyncFlatSpec with AsyncIOSpec with MockitoSugar
     status
   }
 
-  // Mock of client provider for testing
-  trait ClientProvider {
-    def getClient(): IO[Client[IO]]
+  // Test implementation of client provider
+  class TestClientProvider(mockClient: Client[IO]) extends SplunkLogger.ClientProvider {
+    override def getClient(): IO[Client[IO]] = IO.pure(mockClient)
   }
 }
